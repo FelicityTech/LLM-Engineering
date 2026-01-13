@@ -1,14 +1,89 @@
 # Building RAG Agents with LLMs
+### 🎓 A Journey to NVIDIA Certification
 
 <div align="center">
   <img src="https://dli-lms.s3.amazonaws.com/assets/general/DLI_Header_White.png" width="400" height="186" alt="NVIDIA DLI"/>
 </div>
 
-## 📖 Overview
+---
 
-This repository contains a comprehensive course on building Retrieval-Augmented Generation (RAG) agents using Large Language Models (LLMs). The course demonstrates how to create production-ready AI applications using microservices architecture, LangChain, and NVIDIA AI Foundation Models.
+## 🌟 The Journey Begins
 
-The project showcases best practices for developing, deploying, and orchestrating LLM-powered applications with a focus on practical, real-world implementations using containerized microservices.
+On January 10th, 2026, something remarkable happened. In the heart of Obafemi Awolowo University (OAU), a collaboration between **NVIDIA Deep Learning Institute** and **RAIN-INN OAU** brought together minds eager to explore the frontiers of artificial intelligence. This wasn't just another workshop—it was a gateway to mastering one of the most transformative technologies of our time: **Retrieval-Augmented Generation (RAG) with Large Language Models**.
+
+As dawn broke over Ile-Ife, participants gathered with laptops, notebooks, and boundless curiosity. The air buzzed with anticipation. What lay ahead was an intensive day-long journey that would transform theoretical understanding into practical mastery, culminating in a coveted **NVIDIA Certificate of Competency**.
+
+### 🏆 The Achievement
+
+**Certificate Holder**: Solomon Adegoke  
+**Certification**: Building RAG Agents with LLMs  
+**Issued By**: Greg Estes, Vice President, NVIDIA  
+**Issue Date**: January 10, 2026  
+**Certification ID**: R8pjpFlvQvmg26424YXfkA
+
+This repository stands as a testament to that transformative day—a chronicle of learning, building, and achieving competency in one of AI's most powerful paradigms.
+
+---
+
+## 📖 The Story Behind the Code
+
+### Act I: The Foundation - Understanding the Landscape
+
+The journey began with understanding the "why" before the "how." In a world where AI models grow more powerful by the day, the question isn't just about having access to intelligence—it's about architecting systems that are **scalable, maintainable, and production-ready**.
+
+Through meticulously crafted Jupyter notebooks, we discovered:
+- How microservices architecture enables LLM applications to scale
+- Why NVIDIA AI Foundation Models represent the cutting edge of accessible AI
+- The philosophy behind LangChain as an orchestration framework
+
+### Act II: The Build - From Theory to Practice
+
+Armed with knowledge, hands moved to keyboards. The workshop wasn't about passive learning—it was about **building**. Each module brought new capabilities:
+
+**Morning Session**: The groundwork was laid. We learned to:
+- Navigate Jupyter Labs like seasoned developers
+- Understand microservices communication through Docker containers
+- Connect to NVIDIA's powerful LLM endpoints with simple Python code
+
+**Midday Deep Dive**: The core concepts emerged:
+- Document loaders transforming PDFs and text into machine-readable chunks
+- Embeddings capturing semantic meaning in mathematical space
+- Vector stores enabling lightning-fast similarity search
+
+**Afternoon Climax**: The magic happened:
+- Building a complete RAG pipeline from scratch
+- Watching as documents came alive with intelligent retrieval
+- Seeing context-aware responses generated in real-time
+
+### Act III: The Mastery - Document-Based RAG Project
+
+The culmination arrived with the **flagship project**: a fully functional Document-Based RAG system. This wasn't a toy example—it was production-grade code capable of:
+
+- Loading complex documents with Unstructured and PyMuPDF
+- Generating semantic embeddings with NVIDIA's state-of-the-art models
+- Storing millions of vectors in FAISS for sub-second retrieval
+- Orchestrating conversational agents that remember, reason, and respond
+
+The moment when the first successful query returned—when the system understood context, retrieved relevant information, and synthesized a coherent response—that was the moment everything clicked. The abstractions became concrete. The architecture made sense. The power of RAG became undeniable.
+
+---
+
+## 🎯 What Was Mastered
+
+Through this intensive workshop, competency was achieved in:
+
+✅ **Microservices Architecture** - Building scalable, containerized AI applications  
+✅ **NVIDIA AI Foundation Models** - Leveraging cutting-edge LLMs and NIM endpoints  
+✅ **LangChain Mastery** - Orchestrating complex LLM workflows with elegance  
+✅ **Document Processing** - Transforming unstructured data into AI-ready formats  
+✅ **Embedding Systems** - Understanding and implementing semantic representations  
+✅ **Vector Databases** - Building and querying FAISS vector stores at scale  
+✅ **RAG Architecture** - Designing retrieval-augmented generation pipelines  
+✅ **Conversational AI** - Creating stateful, tool-calling agents  
+✅ **Evaluation & Guardrails** - Ensuring quality and safety in production systems  
+✅ **Deployment** - Taking models from notebook to production with LangServe  
+
+---
 
 ## 🎯 Learning Objectives
 
