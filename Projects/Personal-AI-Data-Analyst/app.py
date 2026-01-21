@@ -10,12 +10,6 @@ try:
 except Exception:
     pass
 
-# Load .env locally ONLY (Streamlit Cloud ignores this safely)
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except Exception:
-    pass
 from analyst import (
     load_data,
     suggest_prompts,
@@ -152,8 +146,6 @@ with st.sidebar:
                 st.info("💡 **Gemini**: Best for data analysis, large context (1M tokens)")
             elif selected_provider == "groq":
                 st.info("💡 **Groq**: Super fast inference (300+ tokens/sec)")
-            # elif selected_provider == "huggingface":
-            #     st.info("💡 **HuggingFace**: May take 20s to load, then fast")
         else:
             selected_provider = None
             selected_model = None
@@ -162,35 +154,6 @@ with st.sidebar:
     with st.expander("📊 Display"):
         show_code = st.checkbox("Show generated code", value=True)
         max_preview_rows = st.slider("Max preview rows", 10, 800, 150, 50)
-
-    # with st.expander("💡 How to Get FREE API Keys"):
-    #     st.markdown("""
-    #     **🎯 ALL ARE 100% FREE - NO CREDIT CARD NEEDED!**
-        
-    #     **1. Google Gemini (RECOMMENDED)**
-    #     - Visit: [aistudio.google.com](https://aistudio.google.com)
-    #     - Click "Get API Key"
-    #     - Copy key → add to `.env`
-    #     - Limits: 15 req/min, 1000 req/day
-        
-    #     **2. Groq (SUPER FAST)**
-    #     - Visit: [console.groq.com](https://console.groq.com)
-    #     - Sign up (no card needed)
-    #     - Create API key
-    #     - Limits: Very generous!
-        
-    #     **3. Hugging Face**
-    #     - Visit: [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)
-    #     - Create "Read" token
-    #     - Copy → add to `.env`
-    #     - Limits: Rate limited
-        
-    #     **Setup:**
-    #     1. Create `.env` file in your project folder
-    #     2. Add: `GEMINI_API_KEY=your_key_here`
-    #     3. Restart your app
-    #     4. Done! ✅
-    #     """)
 
     st.divider()
     st.caption(f"Session • {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -324,17 +287,62 @@ if current_prompt:
 if run_clicked and current_prompt:
     with st.spinner("🔄 Preparing analysis..."):
         try:
-            # STEP 1: Try template first
+            # STEP 1: Try template first (NO AI)
             code = prompt_to_code(current_prompt, df)
 
             if code:
+                # ✅ Template match - run immediately without AI
                 st.info("✅ Using built-in template (no AI needed)", icon="⚡")
                 if show_code:
                     with st.expander("📄 Generated code (template)"):
                         st.code(code, "python")
+                
+                # Execute template code directly
+                st.subheader("📊 Results")
+                with st.spinner("⚙️ Running code..."):
+                    result = run_code(df, code)
+                
+                # Display results (same as below)
+                if result["type"] == "dataframe":
+                    st.dataframe(result["df"], use_container_width=True)
+                    csv_bytes = result["df"].to_csv(index=False).encode("utf-8")
+                    fname = f"result_{datetime.now():%Y%m%d_%H%M%S}.csv"
+                    st.download_button("💾 Download as CSV", csv_bytes, fname, "text/csv")
 
-            # STEP 2: Fall back to AI
+                elif result["type"] == "image":
+                    st.image(result["path"], use_column_width=True)
+                    with open(result["path"], "rb") as imgf:
+                        st.download_button(
+                            "💾 Download Chart",
+                            imgf,
+                            file_name=f"chart_{datetime.now():%Y%m%d_%H%M%S}.png",
+                            mime="image/png"
+                        )
+
+                elif result["type"] == "text":
+                    if "error" in result["output"].lower() or "❌" in result["output"]:
+                        st.error("**Output:**")
+                        st.code(result["output"])
+                    else:
+                        st.success("**Output:**")
+                        st.text(result["output"])
+                else:
+                    st.info(f"Result type: {result.get('type', 'unknown')}")
+                    st.write(result)
+                
+                # Add to history
+                st.session_state.history.append({
+                    "timestamp": datetime.now(),
+                    "prompt": current_prompt[:90] + ("..." if len(current_prompt) > 90 else ""),
+                    "result_type": result["type"],
+                    "used_ai": False,
+                    "provider": None
+                })
+                
+                st.success("✅ Analysis complete!", icon="🎉")
+
             else:
+                # STEP 2: No template match - use AI
                 if not use_ai or not available_providers:
                     st.warning("⚠️ This analysis requires AI. Please add an API key in the sidebar!", icon="🤖")
                     st.info("💡 Or try one of the suggested prompts for instant results!")
@@ -349,46 +357,51 @@ if run_clicked and current_prompt:
                 full_response = ""
                 start_ts = time.time()
                 token_count = 0
-            for attempt in range(max_retries + 1):
-                for token in ask_llm(
-                    prompt=current_prompt,
-                    df_info=df_summary,
-                    provider=selected_provider,
-                    model=selected_model,
-                    timeout=llm_timeout
-                ):
-                    full_response += token
-                code = extract_python_code(full_response)
-                if code and not _is_code_incomplete(code):
-                    break  # ✅ finished successfully
-                # Ask model to continue
-                current_prompt = _continuation_prompt()
-                if time.time() - start_ts > llm_timeout + 30:
-                    raise TimeoutError(f"Generation exceeded timeout ({llm_timeout}s)")
+                max_retries = 2  # Allow continuation attempts
 
-                    full_response += token
-                    token_count += 1
+                for attempt in range(max_retries + 1):
+                    for token in ask_llm(
+                        prompt=current_prompt,
+                        df_info=df_summary,
+                        provider=selected_provider,
+                        model=selected_model,
+                        timeout=llm_timeout
+                    ):
+                        full_response += token
+                        token_count += 1
 
-                    if token_count % 5 == 0:
-                        live_output.markdown(full_response + " ▌")
+                        if token_count % 5 == 0:
+                            live_output.markdown(full_response + " ▌")
 
-                    # Check for error messages
-                    if token.startswith("["):
-                        status_container.update(label=f"❌ {token}", state="error", expanded=False)
-                        live_output.error(token)
-                        
-                        # Suggest alternatives on error
-                        other_providers = [k for k in available_providers.keys() if k != selected_provider]
-                        if other_providers:
-                            st.info(f"💡 **Try switching to:** {', '.join([available_providers[p]['name'] for p in other_providers])}")
-                        else:
-                            st.info("💡 **Get more FREE API keys** from the sidebar guide!")
-                        st.stop()
+                        # Check for error messages
+                        if token.startswith("["):
+                            status_container.update(label=f"❌ {token}", state="error", expanded=False)
+                            live_output.error(token)
+                            
+                            # Suggest alternatives on error
+                            other_providers = [k for k in available_providers.keys() if k != selected_provider]
+                            if other_providers:
+                                st.info(f"💡 **Try switching to:** {', '.join([available_providers[p]['name'] for p in other_providers])}")
+                            else:
+                                st.info("💡 **Get more FREE API keys** from the sidebar guide!")
+                            st.stop()
+
+                    code = extract_python_code(full_response)
+                    
+                    # Check if code is complete
+                    if code and not _is_code_incomplete(code):
+                        break  # ✅ Code is complete
+                    
+                    # Need continuation
+                    if attempt < max_retries:
+                        current_prompt = _continuation_prompt()
+                        if time.time() - start_ts > llm_timeout + 30:
+                            raise TimeoutError(f"Generation exceeded timeout ({llm_timeout}s)")
+                    else:
+                        break  # Max retries reached
 
                 live_output.markdown(full_response)
                 status_container.update(label="✅ Code generation complete", state="complete", expanded=False)
-
-                code = extract_python_code(full_response)
 
                 if not code:
                     st.error("❌ Could not extract valid Python code from AI response")
@@ -401,51 +414,51 @@ if run_clicked and current_prompt:
                     with st.expander("📄 AI-generated code"):
                         st.code(code, "python")
 
-            # STEP 3: Execute
-            st.subheader("📊 Results")
-            
-            with st.spinner("⚙️ Running code..."):
-                result = run_code(df, code)
+                # STEP 3: Execute AI-generated code
+                st.subheader("📊 Results")
+                
+                with st.spinner("⚙️ Running code..."):
+                    result = run_code(df, code)
 
-            # STEP 4: Display results
-            if result["type"] == "dataframe":
-                st.dataframe(result["df"], use_container_width=True)
-                csv_bytes = result["df"].to_csv(index=False).encode("utf-8")
-                fname = f"result_{datetime.now():%Y%m%d_%H%M%S}.csv"
-                st.download_button("💾 Download as CSV", csv_bytes, fname, "text/csv")
+                # STEP 4: Display results
+                if result["type"] == "dataframe":
+                    st.dataframe(result["df"], use_container_width=True)
+                    csv_bytes = result["df"].to_csv(index=False).encode("utf-8")
+                    fname = f"result_{datetime.now():%Y%m%d_%H%M%S}.csv"
+                    st.download_button("💾 Download as CSV", csv_bytes, fname, "text/csv")
 
-            elif result["type"] == "image":
-                st.image(result["path"], use_column_width=True)
-                with open(result["path"], "rb") as imgf:
-                    st.download_button(
-                        "💾 Download Chart",
-                        imgf,
-                        file_name=f"chart_{datetime.now():%Y%m%d_%H%M%S}.png",
-                        mime="image/png"
-                    )
+                elif result["type"] == "image":
+                    st.image(result["path"], use_column_width=True)
+                    with open(result["path"], "rb") as imgf:
+                        st.download_button(
+                            "💾 Download Chart",
+                            imgf,
+                            file_name=f"chart_{datetime.now():%Y%m%d_%H%M%S}.png",
+                            mime="image/png"
+                        )
 
-            elif result["type"] == "text":
-                if "error" in result["output"].lower() or "❌" in result["output"]:
-                    st.error("**Output:**")
-                    st.code(result["output"])
+                elif result["type"] == "text":
+                    if "error" in result["output"].lower() or "❌" in result["output"]:
+                        st.error("**Output:**")
+                        st.code(result["output"])
+                    else:
+                        st.success("**Output:**")
+                        st.text(result["output"])
+
                 else:
-                    st.success("**Output:**")
-                    st.text(result["output"])
+                    st.info(f"Result type: {result.get('type', 'unknown')}")
+                    st.write(result)
 
-            else:
-                st.info(f"Result type: {result.get('type', 'unknown')}")
-                st.write(result)
+                # Add to history
+                st.session_state.history.append({
+                    "timestamp": datetime.now(),
+                    "prompt": current_prompt[:90] + ("..." if len(current_prompt) > 90 else ""),
+                    "result_type": result["type"],
+                    "used_ai": True,
+                    "provider": selected_provider
+                })
 
-            # Add to history
-            st.session_state.history.append({
-                "timestamp": datetime.now(),
-                "prompt": current_prompt[:90] + ("..." if len(current_prompt) > 90 else ""),
-                "result_type": result["type"],
-                "used_ai": code and not prompt_to_code(current_prompt, df),
-                "provider": selected_provider if code and not prompt_to_code(current_prompt, df) else None
-            })
-
-            st.success("✅ Analysis complete!", icon="🎉")
+                st.success("✅ Analysis complete!", icon="🎉")
 
         except TimeoutError as te:
             st.error(f"⏱️ **Timeout:** {str(te)}")
