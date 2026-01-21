@@ -1,5 +1,21 @@
 # app.py
 import streamlit as st
+import os
+from analyst import _is_code_incomplete, _continuation_prompt
+
+# Load .env locally only (Streamlit Cloud ignores safely)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
+
+# Load .env locally ONLY (Streamlit Cloud ignores this safely)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
 from analyst import (
     load_data,
     suggest_prompts,
@@ -136,8 +152,8 @@ with st.sidebar:
                 st.info("💡 **Gemini**: Best for data analysis, large context (1M tokens)")
             elif selected_provider == "groq":
                 st.info("💡 **Groq**: Super fast inference (300+ tokens/sec)")
-            elif selected_provider == "huggingface":
-                st.info("💡 **HuggingFace**: May take 20s to load, then fast")
+            # elif selected_provider == "huggingface":
+            #     st.info("💡 **HuggingFace**: May take 20s to load, then fast")
         else:
             selected_provider = None
             selected_model = None
@@ -333,7 +349,7 @@ if run_clicked and current_prompt:
                 full_response = ""
                 start_ts = time.time()
                 token_count = 0
-
+            for attempt in range(max_retries + 1):
                 for token in ask_llm(
                     prompt=current_prompt,
                     df_info=df_summary,
@@ -341,8 +357,14 @@ if run_clicked and current_prompt:
                     model=selected_model,
                     timeout=llm_timeout
                 ):
-                    if time.time() - start_ts > llm_timeout + 30:
-                        raise TimeoutError(f"Generation exceeded timeout ({llm_timeout}s)")
+                    full_response += token
+                code = extract_python_code(full_response)
+                if code and not _is_code_incomplete(code):
+                    break  # ✅ finished successfully
+                # Ask model to continue
+                current_prompt = _continuation_prompt()
+                if time.time() - start_ts > llm_timeout + 30:
+                    raise TimeoutError(f"Generation exceeded timeout ({llm_timeout}s)")
 
                     full_response += token
                     token_count += 1

@@ -20,7 +20,6 @@ import json
 import re
 from typing import Dict, List, Optional, Union, Generator, Any
 import requests
-from dotenv import load_dotenv
 
 # Optional scientific libraries
 try:
@@ -34,7 +33,6 @@ try:
 except ImportError:
     HAS_SCIPY = False
 
-load_dotenv()
 
 # ────────────────────────────────────────────────
 # FREE API Configuration
@@ -46,8 +44,8 @@ class FreeAPIConfig:
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
     GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
     GEMINI_MODELS = [
-        "gemini-2.0-flash-exp",
-        "gemini-1.5-flash",
+        # "gemini-2.0-flash-exp",
+        # "gemini-1.5-flash",
         "gemini-1.5-pro"
     ]
     
@@ -55,8 +53,8 @@ class FreeAPIConfig:
     GROQ_API_KEY = os.getenv("GROQ_API_KEY")
     GROQ_BASE_URL = "https://api.groq.com/openai/v1"
     GROQ_MODELS = [
-        "llama-3.3-70b-versatile",
-        "deepseek-r1-distill-llama-70b",
+        # "llama-3.3-70b-versatile",
+        # "deepseek-r1-distill-llama-70b",
         "llama-3.1-8b-instant"
     ]
     
@@ -64,8 +62,8 @@ class FreeAPIConfig:
     HF_API_KEY = os.getenv("HF_API_KEY")
     HF_BASE_URL = "https://api-inference.huggingface.co/models"
     HF_MODELS = [
-        "meta-llama/Llama-3.2-3B-Instruct",
-        "microsoft/Phi-3-mini-4k-instruct",
+        # "meta-llama/Llama-3.2-3B-Instruct",
+        # "microsoft/Phi-3-mini-4k-instruct",
         "Qwen/Qwen2.5-7B-Instruct"
     ]
 
@@ -147,6 +145,7 @@ CRITICAL RULES:
 
 ### USER REQUEST:
 {prompt}"""
+        
 
         url = f"{FreeAPIConfig.GEMINI_BASE_URL}/{model}:generateContent?key={api_key}"
         payload = {
@@ -195,6 +194,10 @@ CRITICAL RULES:
 3. For tables: assign to 'result' variable
 4. For charts: create with plt, do NOT call plt.show()
 5. Generate ENTIRE code - don't stop midway
+FINAL RULE:
+- The Python code MUST be complete and executable
+- NEVER stop mid-block or mid-function
+- If output is long, CONTINUE until finished
 
 ### DATASET INFO:
 {df_info}"""
@@ -251,6 +254,10 @@ CRITICAL RULES:
             return
         
         system_content = f"""You are an expert data analyst. Generate COMPLETE Python code.
+        FINAL RULE:
+- The Python code MUST be complete and executable
+- NEVER stop mid-block or mid-function
+- If output is long, CONTINUE until finished
 
 Dataset Info:
 {df_info}
@@ -732,3 +739,31 @@ def get_api_status() -> str:
 def get_available_providers() -> Dict[str, Dict]:
     """Get dict of available providers and their models"""
     return free_api_client.providers
+
+
+def _is_code_incomplete(code: str) -> bool:
+    """Detect whether generated Python code is likely incomplete"""
+    if not code or not code.strip():
+        return True
+
+    if not code.strip().endswith((")", "]", "}", "result", "plt.savefig")):
+        return True
+
+    try:
+        compile(code, "<generated>", "exec")
+        return False
+    except SyntaxError:
+        return True
+
+
+def _continuation_prompt() -> str:
+    return (
+        "CONTINUE the previous Python code EXACTLY from where it stopped.\n"
+        "Rules:\n"
+        "- DO NOT repeat any code\n"
+        "- DO NOT explain\n"
+        "- DO NOT add markdown\n"
+        "- Return ONLY Python code\n"
+        "- Finish all open blocks\n"
+        "- End with `result = ...` or `plt.savefig(...)`\n"
+    )
