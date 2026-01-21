@@ -9,6 +9,7 @@ try:
 except Exception:
     pass
 
+
 from analyst import (
     load_data,
     suggest_prompts,
@@ -25,6 +26,7 @@ from analyst import (
     _is_code_incomplete,
     _continuation_prompt
 )
+
 import pandas as pd
 from datetime import datetime
 import traceback
@@ -92,7 +94,7 @@ st.markdown(
     '🔗 Connect on LinkedIn</a></div>',
     unsafe_allow_html=True
 )
-st.caption("Upload data → get insights!")
+st.caption("Upload data → get insights in your data!")
 
 # ────────────────────────────────────────────────
 # Sidebar
