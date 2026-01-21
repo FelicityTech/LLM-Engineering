@@ -331,6 +331,11 @@ def suggest_prompts(df: pd.DataFrame, max_suggestions: int = None) -> List[str]:
             f"📊 Count by '{categorical[0]}'",
         ])
 
+
+        suggestions.append("T-test between two groups")
+        suggestions.append("Detect constant or near-constant columns")
+
+
     return suggestions[:max_suggestions]
 
 
@@ -345,6 +350,14 @@ def prompt_to_code(prompt: str, df: pd.DataFrame) -> Optional[str]:
     categorical = types["categorical"]
     datetime_cols = types["datetime"]
     text = types["text"]
+    if "constant" in p:
+        return """
+result = pd.DataFrame({
+    "Column": df.columns,
+    "Unique_Count": df.nunique(),
+    "Unique_%": (df.nunique() / len(df) * 100).round(2)
+}).query("Unique_Count <= 1 or Unique_% < 1")
+"""
 
     # ──── OVERVIEW & BASICS ────
     if "dataset summary" in p or p == "📊 dataset summary & statistics":
@@ -378,6 +391,20 @@ def prompt_to_code(prompt: str, df: pd.DataFrame) -> Optional[str]:
             
             result = "\\n".join(info)
         """)
+    if "rolling average" in p:
+        dt = df.select_dtypes(include=["datetime", "object"]).columns[0]
+        num = df.select_dtypes("number").columns[0]
+        return (f"""
+df['{dt}'] = pd.to_datetime(df['{dt}'])
+df = df.sort_values('{dt}')
+df['rolling_mean'] = df['{num}'].rolling(7).mean()
+
+plt.figure(figsize=(10,5))
+plt.plot(df['{dt}'], df['{num}'], alpha=0.4)
+plt.plot(df['{dt}'], df['rolling_mean'], linewidth=2)
+plt.title("7-Day Rolling Average")
+plt.tight_layout()
+""")
 
     if "first 20 rows" in p or "show first" in p:
         return "result = df.head(20)"
@@ -635,6 +662,20 @@ def prompt_to_code(prompt: str, df: pd.DataFrame) -> Optional[str]:
             plt.tight_layout()
             result_img_path = None
         """)
+    if "t-test" in p:
+        num = df.select_dtypes("number").columns[0]
+        cat = df.select_dtypes(exclude="number").columns[0]
+        groups = df[cat].dropna().unique()[:2]
+        return (f"""
+from scipy import stats
+
+g1 = df[df['{cat}'] == '{groups[0]}']['{num}'].dropna()
+g2 = df[df['{cat}'] == '{groups[1]}']['{num}'].dropna()
+
+stat, pval = stats.ttest_ind(g1, g2, equal_var=False)
+result = f"T-test p-value: {{pval:.5f}}"
+""")
+
 
     # ──── CATEGORICAL ANALYSIS ────
     if "top 10" in p and "values" in p:
@@ -858,17 +899,27 @@ def prompt_to_code(prompt: str, df: pd.DataFrame) -> Optional[str]:
     if "most common words" in p and text:
         m = re.search(r"'([^']+)'", prompt)
         col = m.group(1) if m else text[0]
-        
         return textwrap.dedent(f"""
             from collections import Counter
             import re
-            
             all_text = ' '.join(df['{col}'].dropna().astype(str))
             words = re.findall(r'\\b\\w+\\b', all_text.lower())
             word_counts = Counter(words).most_common(20)
             
             result = pd.DataFrame(word_counts, columns=['Word', 'Count'])
         """)
+    if "t-test" in p:
+        num = df.select_dtypes("number").columns[0]
+        cat = df.select_dtypes(exclude="number").columns[0]
+        groups = df[cat].dropna().unique()[:2]
+        return (f"""
+from scipy import stats
+g1 = df[df['{cat}'] == '{groups[0]}']['{num}'].dropna()
+g2 = df[df['{cat}'] == '{groups[1]}']['{num}'].dropna()
+
+stat, pval = stats.ttest_ind(g1, g2, equal_var=False)
+result = f"T-test p-value: {{pval:.5f}}"
+""")
 
     # ──── AGGREGATIONS ────
     if "top 10 rows by" in p and numeric:
@@ -946,7 +997,20 @@ def prompt_to_code(prompt: str, df: pd.DataFrame) -> Optional[str]:
     # No template match
     return None
 
+def auto_insights(df):
+    insights = []
 
+    if df.isnull().mean().max() > 0.3:
+        insights.append("⚠️ High missing values detected")
+
+    corr = df.select_dtypes("number").corr().abs()
+    if corr.max().max() > 0.85:
+        insights.append("🔥 Strong correlations detected")
+
+    if df.duplicated().mean() > 0.05:
+        insights.append("⚠️ Significant duplicate rows found")
+
+    return insights
 # ────────────────────────────────────────────────
 # Code Execution
 # ────────────────────────────────────────────────
@@ -1012,6 +1076,7 @@ def get_df_summary(df: pd.DataFrame) -> str:
     summary = []
     summary.append(f"Shape: {df.shape[0]} rows × {df.shape[1]} columns")
     summary.append(f"Columns: {', '.join(df.columns[:20])}")
+
 
     types = _detect_column_types(df)
     if types["numeric"]:
@@ -1295,23 +1360,18 @@ def validate_dataframe(df: pd.DataFrame) -> tuple[bool, str]:
 
 
 def extract_python_code(llm_output: str) -> Optional[str]:
-    """Extract Python code from LLM response"""
-    if "```python" in llm_output:
-        try:
-            return llm_output.split("```python")[1].split("```")[0].strip()
-        except IndexError:
-            pass
+    if "```" not in llm_output:
+        return None
 
-    if "```" in llm_output:
-        try:
-            code = llm_output.split("```")[1].split("```")[0].strip()
-            lines = code.split("\n")
-            if lines and lines[0].strip().lower() in ["python", "py"]:
-                return "\n".join(lines[1:]).strip()
-            return code
-        except IndexError:
-            pass
-
+    blocks = llm_output.split("```")
+    for block in blocks:
+        lines = block.strip().splitlines()
+        if not lines:
+            continue
+        if lines[0].lower() in ("python", "py"):
+            return "\n".join(lines[1:]).strip()
+        if "import" in block or "df" in block:
+            return block.strip()
     return None
 
 
@@ -1325,30 +1385,29 @@ def get_available_providers() -> Dict[str, Dict]:
     return free_api_client.providers
 
 
-def _is_code_incomplete(code: str) -> bool:
-    """Detect whether generated Python code is likely incomplete"""
-    if not code or not code.strip():
-        return True
-
-    if not code.strip().endswith((")", "]", "}", "result", "plt.savefig", "plt.tight_layout()")):
-        return True
-
-    try:
-        compile(code, "<generated>", "exec")
-        return False
-    except SyntaxError:
-        return True
-
-
 def _continuation_prompt() -> str:
+    return (
+        "The previous response was cut off. "
+        "Continue ONLY the remaining Python code. "
+        "Do NOT repeat earlier code. "
+        "Ensure the code ends cleanly and produces a result or plot."
+    )
+    # Must produce output or a plot
+    has_result = "result =" in code
+    has_plot = "plt." in code or "sns." in code
+
+    return not (has_result or has_plot)
+
+
+def _is_code_incomplete() -> str:
     """Generate continuation prompt for incomplete code"""
     return (
-        "CONTINUE the previous Python code EXACTLY from where it stopped.\n"
+         "CONTINUE the previous Python code EXACTLY from where it stopped.\n"
         "Rules:\n"
-        "- DO NOT repeat any code\n"
-        "- DO NOT explain\n"
-        "- DO NOT add markdown\n"
-        "- Return ONLY Python code\n"
-        "- Finish all open blocks\n"
-        "- End with `result = ...` or `plt.savefig(...)`\n"
+        "- DO NOT repeat any previous lines\n"
+        "- DO NOT explain anything\n"
+        "- DO NOT use markdown\n"
+        "- Output ONLY valid Python code\n"
+        "- Close all open blocks\n"
+        "- End with either `result = ...` or a matplotlib plot\n"
     )
