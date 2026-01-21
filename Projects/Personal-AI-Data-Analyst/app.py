@@ -1,7 +1,6 @@
 # app.py
 import streamlit as st
 import os
-from analyst import _is_code_incomplete, _continuation_prompt
 
 # Load .env locally only (Streamlit Cloud ignores safely)
 try:
@@ -22,7 +21,9 @@ from analyst import (
     get_api_status,
     get_available_providers,
     AnalystConfig,
-    FreeAPIConfig
+    FreeAPIConfig,
+    _is_code_incomplete,
+    _continuation_prompt
 )
 import pandas as pd
 from datetime import datetime
@@ -32,6 +33,17 @@ import time
 # ────────────────────────────────────────────────
 # Page config & styling
 # ────────────────────────────────────────────────
+# At the top of the file
+MAX_PREVIEW_ROWS_DEFAULT = 150
+HISTORY_DISPLAY_LIMIT = 10
+PROMPT_TRUNCATE_LENGTH = 90
+TOKEN_DISPLAY_FREQUENCY = 5
+
+
+ERROR_NO_API_KEY = "❌ This analysis requires AI, but no API keys are configured!"
+ERROR_NO_CODE = "❌ Could not extract valid Python code from AI response" 
+
+
 st.set_page_config(
     page_title="FelicityTech AI Data Analyst",
     layout="wide",
@@ -92,13 +104,13 @@ with st.sidebar:
     api_status = get_api_status()
     available_providers = get_available_providers()
     
-    with st.expander("🔑 API Keys Status", expanded=True):
+    with st.expander("🔑 API Keys Status", expanded=not bool(available_providers)):
         st.text(api_status)
         
         if not available_providers:
-            st.error("⚠️ No API keys found!")
+            st.warning("⚠️ No API keys found - Custom AI prompts disabled")
             st.markdown("""
-            **Add to your `.env` file:**
+            **Add to your `.env` file for Custom AI:**
             ```
             # Choose at least ONE (all are 100% FREE):
             
@@ -111,16 +123,13 @@ with st.sidebar:
             - Gemini: [aistudio.google.com](https://aistudio.google.com)
             - Groq: [console.groq.com](https://console.groq.com)
             - Hugging Face: [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)
+            
+            **Note:** Suggested prompts work without any API keys!
             """)
+        else:
+            st.success("✅ AI available for custom prompts")
 
     with st.expander("🤖 AI Settings", expanded=bool(available_providers)):
-        use_ai = st.checkbox(
-            "Enable AI for custom prompts",
-            value=bool(available_providers),
-            disabled=not bool(available_providers),
-            help="Required for custom analysis. All models are 100% FREE!"
-        )
-        
         if available_providers:
             # Provider selection
             provider_options = {k: v["name"] for k, v in available_providers.items()}
@@ -147,6 +156,7 @@ with st.sidebar:
             elif selected_provider == "groq":
                 st.info("💡 **Groq**: Super fast inference (300+ tokens/sec)")
         else:
+            st.info("⚡ **Suggested prompts** work without AI - just upload data and select!")
             selected_provider = None
             selected_model = None
             llm_timeout = 120
@@ -165,6 +175,8 @@ if 'df' not in st.session_state:
     st.session_state.df = None
 if 'history' not in st.session_state:
     st.session_state.history = []
+if 'active_tab' not in st.session_state:
+    st.session_state.active_tab = 0
 
 # ────────────────────────────────────────────────
 # Upload & load data
@@ -181,19 +193,28 @@ if uploaded_file is None:
     
     with st.expander("🎓 Example Analyses"):
         st.markdown("""
-        **With Suggested Prompts (Instant - No AI):**
-        - Dataset summary
+        **⚡ Suggested Prompts (NO AI NEEDED - Work Instantly):**
+        - Dataset summary & statistics
         - Missing value analysis
+        - Data type information
+        - Column distribution analysis
         - Histograms & scatter plots
         - Correlation heatmaps
+        - Top/bottom N rows
+        - Duplicate detection
+        - Outlier detection
+        - Group-by aggregations
+        - Time series plots
+        - **And 20+ more built-in templates!**
         
-        **With Custom AI Prompts (FREE):**
-        - "Show top 10 products by revenue"
-        - "Create monthly sales trend"
-        - "Find customers with unusual patterns"
-        - "Compare categories side-by-side"
+        **🤖 Custom AI Prompts (Requires FREE API Key):**
+        - "Show top 10 products by revenue with percentage"
+        - "Create monthly sales trend with forecast"
+        - "Find customers with unusual purchasing patterns"
+        - "Compare categories side-by-side with statistical tests"
+        - "Generate executive summary report"
         
-        **No Credit Card Ever Required! 🎉**
+        **💡 No Credit Card Ever Required!**
         """)
     st.stop()
 
@@ -227,7 +248,7 @@ with st.expander("👀 Data preview", expanded=False):
         'Column': df.columns,
         'Type': df.dtypes.astype(str),
         'Non-Null': df.count().values,
-        'Unique': [df[col].nunique() for col in df.columns]
+        'Unique': [df[col].nunique() if len(df) < 100000 else "N/A" for col in df.columns]
     })
     st.dataframe(col_info, use_container_width=True, height=200)
 
@@ -239,34 +260,45 @@ st.divider()
 st.subheader("2. Choose or write an analysis")
 
 try:
-    suggestions = suggest_prompts(df, max_suggestions=12)
+    suggestions = suggest_prompts(df, max_suggestions=25)
 except Exception:
     suggestions = ["Summarize this dataset"]
 
 left, right = st.columns([3.5, 1.4])
 
+current_prompt = None
+
 with left:
-    tab1, tab2 = st.tabs(["⚡ Suggested (Instant)", "✍️ Custom (FREE AI)"])
+    tab1, tab2 = st.tabs(["⚡ Suggested (Instant - No AI)", "✍️ Custom (Requires AI)"])
 
     with tab1:
         selected = st.selectbox(
-            "Pick a pre-built analysis (no AI needed)",
+            "Pick a pre-built analysis (works without any API keys)",
             suggestions,
             key="suggested_prompt",
-            help="These run instantly without API calls"
+            help="These run instantly without API calls - just template-based code"
         )
         current_prompt = selected
+        st.session_state.active_tab = 0
 
     with tab2:
-        custom_text = st.text_area(
-            "Describe your analysis in plain English",
-            height=120,
-            placeholder="Examples:\n• Show monthly revenue trends\n• Top 10 customers by total spend\n• Compare sales across regions\n• Find outliers in price column",
-            key="custom_prompt",
-            help="Uses FREE AI APIs (Gemini/Groq/HuggingFace)"
-        )
-        if custom_text.strip():
-            current_prompt = custom_text.strip()
+        if not available_providers:
+            st.warning("🔑 **Custom AI prompts require an API key**")
+            st.info("👈 Add a FREE API key in the sidebar to unlock custom analysis")
+            st.markdown("""
+            Meanwhile, try the **Suggested prompts** tab - they work instantly without any setup!
+            """)
+        else:
+            custom_text = st.text_area(
+                "Describe your analysis in plain English",
+                height=120,
+                placeholder="Examples:\n• Show monthly revenue trends\n• Top 10 customers by total spend\n• Compare sales across regions\n• Find outliers in price column",
+                key="custom_prompt",
+                help="Uses FREE AI APIs (Gemini/Groq/HuggingFace)"
+            )
+            if custom_text.strip():
+                current_prompt = custom_text.strip()
+                st.session_state.active_tab = 1
 
 with right:
     st.markdown("**Actions**")
@@ -287,11 +319,11 @@ if current_prompt:
 if run_clicked and current_prompt:
     with st.spinner("🔄 Preparing analysis..."):
         try:
-            # STEP 1: Try template first (NO AI)
+            # STEP 1: Try template first (NO AI - ALWAYS FIRST)
             code = prompt_to_code(current_prompt, df)
 
             if code:
-                # ✅ Template match - run immediately without AI
+                # ✅ TEMPLATE MATCH - Run immediately WITHOUT AI
                 st.info("✅ Using built-in template (no AI needed)", icon="⚡")
                 if show_code:
                     with st.expander("📄 Generated code (template)"):
@@ -302,7 +334,7 @@ if run_clicked and current_prompt:
                 with st.spinner("⚙️ Running code..."):
                     result = run_code(df, code)
                 
-                # Display results (same as below)
+                # Display results
                 if result["type"] == "dataframe":
                     st.dataframe(result["df"], use_container_width=True)
                     csv_bytes = result["df"].to_csv(index=False).encode("utf-8")
@@ -342,10 +374,11 @@ if run_clicked and current_prompt:
                 st.success("✅ Analysis complete!", icon="🎉")
 
             else:
-                # STEP 2: No template match - use AI
-                if not use_ai or not available_providers:
-                    st.warning("⚠️ This analysis requires AI. Please add an API key in the sidebar!", icon="🤖")
-                    st.info("💡 Or try one of the suggested prompts for instant results!")
+                # STEP 2: No template match - TRY AI (if available)
+                if not available_providers:
+                    st.error("❌ This analysis requires AI, but no API keys are configured!", icon="🔑")
+                    st.info("**To use custom prompts:**\n1. Get a FREE API key (see sidebar)\n2. Add to `.env` file\n3. Restart the app")
+                    st.warning("**Or:** Try one of the **Suggested prompts** - they work without any API keys!")
                     st.stop()
 
                 df_summary = get_df_summary(df)
@@ -468,7 +501,7 @@ if run_clicked and current_prompt:
             st.error(f"❌ **Error during analysis:**\n{str(exc)}")
             with st.expander("🔍 Full error details"):
                 st.code(traceback.format_exc())
-            st.info("**Common fixes:**\n- Check API keys in sidebar\n- Try different provider/model\n- Use suggested prompt")
+            st.info("**Common fixes:**\n- Try a suggested prompt (no AI needed)\n- Check API keys in sidebar\n- Try different provider/model")
 
 # ────────────────────────────────────────────────
 # History panel
@@ -494,6 +527,6 @@ st.divider()
 # Footer
 col1, col2 = st.columns([2, 1])
 with col1:
-    st.caption("💡 **100% FREE APIs** • No Credit Card Required • Gemini, Groq, HuggingFace")
+    st.caption("💡 **Suggested prompts work instantly** • Custom prompts need FREE API (optional)")
 with col2:
     st.caption("Built by **FelicityTech** • [LinkedIn](https://www.linkedin.com/in/solomon-eniola-adegoke/)")
