@@ -397,10 +397,20 @@ def main():
                             st.session_state.qa_pairs = []
                             st.session_state.processing_complete = False
                             st.success(f"✅ Successfully extracted text from '{uploaded_file.name}'!")
+                            time.sleep(1)  # Give user time to see success message
+                            st.rerun()  # Force rerun to show the extracted content
                         else:
                             st.warning("⚠️ No text could be extracted from the PDF. The file might be empty or contain only images.")
                     except Exception as e:
                         st.error(f"❌ {str(e)}")
+        else:
+            # Clear document when file is removed
+            if st.session_state.document_text:
+                st.session_state.document_text = ""
+                st.session_state.generated_questions = []
+                st.session_state.qa_pairs = []
+                st.session_state.uploaded_file_name = ""
+                st.session_state.processing_complete = False
     
     with col2:
         if st.session_state.document_text:
@@ -408,11 +418,24 @@ def main():
     
     # Display extracted text preview
     if st.session_state.document_text:
+        # Show success banner
+        st.success(f"📄 **Document loaded:** {st.session_state.uploaded_file_name}")
+        
+        # Show document stats
+        col_stat1, col_stat2, col_stat3 = st.columns(3)
+        with col_stat1:
+            st.metric("📝 Words", f"{len(st.session_state.document_text.split()):,}")
+        with col_stat2:
+            st.metric("📊 Characters", f"{len(st.session_state.document_text):,}")
+        with col_stat3:
+            sentences = nltk.tokenize.sent_tokenize(st.session_state.document_text)
+            st.metric("📑 Sentences", f"{len(sentences):,}")
+        
         with st.expander("👁️ Preview Extracted Text (first 1000 characters)", expanded=False):
             preview_text = st.session_state.document_text[:1000]
             if len(st.session_state.document_text) > 1000:
                 preview_text += "..."
-            st.text_area("", preview_text, height=200, disabled=True)
+            st.text_area("", preview_text, height=200, disabled=True, label_visibility="collapsed")
         
         st.markdown("---")
         
@@ -535,8 +558,20 @@ def main():
             
             st.markdown("---")
             
-            # Display Q&A with filtering
-            show_confidence = st.checkbox("Show confidence scores", value=True)
+            # Display options
+            col_opt1, col_opt2 = st.columns(2)
+            
+            with col_opt1:
+                show_confidence = st.checkbox("Show confidence scores", value=True)
+            
+            with col_opt2:
+                view_mode = st.radio(
+                    "View mode:",
+                    ["Expandable List", "Show All"],
+                    horizontal=True,
+                    help="Choose how to display Q&A pairs"
+                )
+            
             min_confidence = st.slider(
                 "Minimum confidence threshold",
                 min_value=0.0,
@@ -544,33 +579,62 @@ def main():
                 value=0.0,
                 step=0.1,
                 help="Filter answers by confidence score"
-            ) if show_confidence else 0.0
+            )
             
             filtered_qa = [qa for qa in st.session_state.qa_pairs if qa['confidence'] >= min_confidence]
             
             st.write(f"Showing {len(filtered_qa)} of {len(st.session_state.qa_pairs)} questions")
+            st.markdown("---")
             
-            for i, qa in enumerate(filtered_qa, 1):
-                with st.container():
-                    st.markdown(f"**Question {i}:** {qa['question']}")
-                    
+            # Display based on view mode
+            if view_mode == "Expandable List":
+                # Show expandable list - click to see answer
+                for i, qa in enumerate(filtered_qa, 1):
                     confidence_color = (
-                        "green" if qa['confidence'] > 0.7 
-                        else "orange" if qa['confidence'] > 0.4 
-                        else "red"
+                        "🟢" if qa['confidence'] > 0.7 
+                        else "🟠" if qa['confidence'] > 0.4 
+                        else "🔴"
                     )
                     
-                    if show_confidence:
-                        st.markdown(
-                            f"**Answer:** {qa['answer']} "
-                            f"<span style='color:{confidence_color}'>●</span> "
-                            f"*Confidence: {qa['confidence']:.2%}*",
-                            unsafe_allow_html=True
-                        )
-                    else:
-                        st.markdown(f"**Answer:** {qa['answer']}")
+                    confidence_text = f" {confidence_color} {qa['confidence']:.0%}" if show_confidence else ""
                     
-                    st.markdown("---")
+                    with st.expander(f"**Q{i}:** {qa['question']}{confidence_text}", expanded=False):
+                        st.markdown(f"### Answer:")
+                        st.info(qa['answer'])
+                        
+                        if show_confidence:
+                            col_a1, col_a2 = st.columns([3, 1])
+                            with col_a2:
+                                st.metric("Confidence", f"{qa['confidence']:.1%}")
+                        
+                        # Optional: Show where in document (if we had position data)
+                        if qa['confidence'] < 0.5:
+                            st.warning("⚠️ Low confidence - answer may not be accurate")
+            
+            else:
+                # Show all Q&A at once
+                for i, qa in enumerate(filtered_qa, 1):
+                    with st.container():
+                        st.markdown(f"### Question {i}")
+                        st.markdown(f"**Q:** {qa['question']}")
+                        
+                        confidence_color = (
+                            "green" if qa['confidence'] > 0.7 
+                            else "orange" if qa['confidence'] > 0.4 
+                            else "red"
+                        )
+                        
+                        if show_confidence:
+                            st.markdown(
+                                f"**A:** {qa['answer']} "
+                                f"<span style='color:{confidence_color}'>●</span> "
+                                f"*Confidence: {qa['confidence']:.2%}*",
+                                unsafe_allow_html=True
+                            )
+                        else:
+                            st.markdown(f"**A:** {qa['answer']}")
+                        
+                        st.markdown("---")
         
         # Custom Question Section
         st.markdown("---")
