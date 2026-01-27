@@ -1,11 +1,11 @@
 import streamlit as st
 import pdfplumber
 import nltk
-from transformers import pipeline, T5Tokenizer, T5ForConditionalGeneration
+from transformers import T5Tokenizer, T5ForConditionalGeneration, pipeline
 import json
-import time
 from typing import List, Dict
 import warnings
+import torch
 
 # Suppress warnings
 warnings.filterwarnings('ignore')
@@ -42,32 +42,6 @@ st.markdown("""
         background-color: #45a049;
         box-shadow: 0 4px 8px rgba(0,0,0,0.2);
     }
-    .upload-section {
-        background-color: #f0f2f6;
-        padding: 2rem;
-        border-radius: 10px;
-        margin-bottom: 2rem;
-    }
-    .question-card {
-        background-color: #ffffff;
-        padding: 1.5rem;
-        border-radius: 8px;
-        border-left: 4px solid #4CAF50;
-        margin-bottom: 1rem;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    }
-    .answer-card {
-        background-color: #e8f5e9;
-        padding: 1rem;
-        border-radius: 6px;
-        margin-top: 0.5rem;
-    }
-    .stats-box {
-        background-color: #e3f2fd;
-        padding: 1rem;
-        border-radius: 8px;
-        text-align: center;
-    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -87,191 +61,164 @@ def load_nltk_data():
         return False
 
 @st.cache_resource(show_spinner=False)
-def load_qg_model():
-    """Load the question generation model"""
+def load_models():
+    """Load both models at once for faster initialization"""
+    models = {}
+    
+    # Load Question Generation Model
     try:
-        model_name = "valhalla/t5-base-qg-hl"
-        tokenizer = T5Tokenizer.from_pretrained(model_name)
-        model = T5ForConditionalGeneration.from_pretrained(model_name)
-        return {'model': model, 'tokenizer': tokenizer, 'name': model_name}
+        qg_model_name = "google/flan-t5-small"  # Using smaller, faster model
+        qg_tokenizer = T5Tokenizer.from_pretrained(qg_model_name)
+        qg_model = T5ForConditionalGeneration.from_pretrained(qg_model_name)
+        models['qg'] = {
+            'model': qg_model, 
+            'tokenizer': qg_tokenizer, 
+            'name': qg_model_name
+        }
     except Exception as e:
-        # Fallback to a simpler model
-        try:
-            st.warning("Primary model unavailable, using fallback model...")
-            model_name = "google/flan-t5-small"
-            tokenizer = T5Tokenizer.from_pretrained(model_name)
-            model = T5ForConditionalGeneration.from_pretrained(model_name)
-            return {'model': model, 'tokenizer': tokenizer, 'name': model_name}
-        except Exception as e2:
-            st.error(f"Error loading Question Generation model: {e2}")
-            return None
-
-@st.cache_resource(show_spinner=False)
-def load_qa_model():
-    """Load the question answering model"""
+        st.error(f"Error loading QG model: {e}")
+        models['qg'] = None
+    
+    # Load Question Answering Model
     try:
+        qa_model_name = "distilbert-base-uncased-distilled-squad"  # Smaller, faster model
         qa_pipeline = pipeline(
-            "question-answering", 
-            model="deepset/roberta-base-squad2",
-            device=-1  # Use CPU
+            "question-answering",
+            model=qa_model_name,
+            device=-1
         )
-        return qa_pipeline
+        models['qa'] = qa_pipeline
     except Exception as e:
-        # Fallback to distilbert
-        try:
-            st.warning("Primary model unavailable, using fallback model...")
-            qa_pipeline = pipeline(
-                "question-answering",
-                model="distilbert-base-uncased-distilled-squad",
-                device=-1
-            )
-            return qa_pipeline
-        except Exception as e2:
-            st.error(f"Error loading Question Answering model: {e2}")
-            return None
+        st.error(f"Error loading QA model: {e}")
+        models['qa'] = None
+    
+    return models
 
 # ============================================================================
-# HELPER FUNCTIONS
+# OPTIMIZED HELPER FUNCTIONS
 # ============================================================================
 
 def extract_text_from_pdf(uploaded_file) -> str:
-    """Extract text from uploaded PDF file"""
+    """Extract text from uploaded PDF file - optimized"""
     try:
         with pdfplumber.open(uploaded_file) as pdf:
             document_text = ""
             total_pages = len(pdf.pages)
             
-            progress_bar = st.progress(0)
-            status_text = st.empty()
+            # Only show progress for large PDFs
+            if total_pages > 10:
+                progress_bar = st.progress(0)
+                status_text = st.empty()
             
             for idx, page in enumerate(pdf.pages):
                 text = page.extract_text()
                 if text:
-                    document_text += text + "\n"
+                    document_text += text + " "
                 
-                # Update progress
-                progress = (idx + 1) / total_pages
-                progress_bar.progress(progress)
-                status_text.text(f"Processing page {idx + 1} of {total_pages}")
+                # Update progress only for large PDFs
+                if total_pages > 10:
+                    progress = (idx + 1) / total_pages
+                    progress_bar.progress(progress)
+                    status_text.text(f"Processing page {idx + 1}/{total_pages}")
             
-            progress_bar.empty()
-            status_text.empty()
+            if total_pages > 10:
+                progress_bar.empty()
+                status_text.empty()
             
             return document_text.strip()
     except Exception as e:
-        raise Exception(f"Error extracting text from PDF: {str(e)}")
+        raise Exception(f"Error extracting text: {str(e)}")
 
-def split_into_passages(text: str, max_words: int = 100) -> List[str]:
-    """Split text into manageable passages"""
-    try:
-        sentences = nltk.tokenize.sent_tokenize(text)
-        passages = []
-        current_passage = ""
-        
-        for sentence in sentences:
-            sentence_word_count = len(sentence.split())
-            current_word_count = len(current_passage.split())
+def split_into_passages(text: str, max_words: int = 150) -> List[str]:
+    """Split text into passages - optimized"""
+    sentences = nltk.tokenize.sent_tokenize(text)
+    passages = []
+    current_passage = ""
+    
+    for sentence in sentences:
+        if len(current_passage.split()) + len(sentence.split()) <= max_words:
+            current_passage += " " + sentence if current_passage else sentence
+        else:
+            if current_passage:
+                passages.append(current_passage.strip())
+            current_passage = sentence
+    
+    if current_passage:
+        passages.append(current_passage.strip())
+    
+    return passages
+
+def generate_questions_batch(passages: List[str], qg_model_dict, questions_per_passage: int = 2) -> List[str]:
+    """Generate questions from multiple passages - optimized batch processing"""
+    model = qg_model_dict['model']
+    tokenizer = qg_model_dict['tokenizer']
+    all_questions = []
+    
+    for passage in passages:
+        try:
+            # Prepare input with shorter max length for speed
+            input_text = f"generate questions: {passage}"
+            inputs = tokenizer(
+                input_text, 
+                return_tensors="pt", 
+                max_length=256,  # Reduced for speed
+                truncation=True
+            )
             
-            if current_word_count + sentence_word_count <= max_words and current_passage:
-                current_passage += " " + sentence
-            else:
-                if current_passage:
-                    passages.append(current_passage.strip())
-                current_passage = sentence
-        
-        if current_passage:
-            passages.append(current_passage.strip())
-        
-        return passages
-    except Exception as e:
-        st.error(f"Error splitting text: {e}")
-        return []
+            # Generate with optimized settings
+            outputs = model.generate(
+                **inputs,
+                max_length=128,  # Shorter output for speed
+                num_beams=2,  # Reduced beams for speed
+                early_stopping=True,
+                do_sample=False  # Deterministic for consistency
+            )
+            
+            result = tokenizer.decode(outputs[0], skip_special_tokens=False)
+            result = result.replace('</s>', '').replace('<pad>', '').strip()
+            
+            # Parse questions
+            questions = [q.strip() for q in result.split('<sep>') if len(q.strip()) > 10]
+            
+            # Take only requested number
+            all_questions.extend(questions[:questions_per_passage])
+            
+        except Exception as e:
+            continue
+    
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_questions = []
+    for q in all_questions:
+        q_lower = q.lower()
+        if q_lower not in seen and len(q) > 10:
+            seen.add(q_lower)
+            unique_questions.append(q)
+    
+    return unique_questions
 
-def generate_questions_from_passage(passage: str, qg_model_dict, min_questions: int = 3) -> List[str]:
-    """Generate questions from a text passage"""
+def answer_question_fast(question: str, context: str, qa_pipeline) -> Dict:
+    """Answer question with optimized context handling"""
     try:
-        model = qg_model_dict['model']
-        tokenizer = qg_model_dict['tokenizer']
-        
-        # Prepare input
-        input_text = f"generate questions: {passage}"
-        inputs = tokenizer(input_text, return_tensors="pt", max_length=512, truncation=True)
-        
-        # Generate questions
-        outputs = model.generate(
-            **inputs,
-            max_length=256,
-            num_beams=4,
-            early_stopping=True
-        )
-        
-        # Decode and parse questions
-        result = tokenizer.decode(outputs[0], skip_special_tokens=False)
-        result = result.replace('</s>', '').replace('<pad>', '').strip()
-        
-        # Split by separator and clean
-        questions = result.split('<sep>')
-        questions = [q.strip() for q in questions if q.strip() and len(q.strip()) > 5]
-        
-        # If we don't have enough questions, try with smaller chunks
-        if len(questions) < min_questions and len(passage.split()) > 20:
-            sentences = nltk.tokenize.sent_tokenize(passage)
-            for i in range(0, min(3, len(sentences) - 1)):
-                if len(questions) >= min_questions:
-                    break
-                chunk = ' '.join(sentences[i:i+2])
-                if len(chunk.split()) > 10:
-                    try:
-                        chunk_input = f"generate questions: {chunk}"
-                        inputs = tokenizer(chunk_input, return_tensors="pt", max_length=512, truncation=True)
-                        outputs = model.generate(**inputs, max_length=128, num_beams=3)
-                        result = tokenizer.decode(outputs[0], skip_special_tokens=False)
-                        result = result.replace('</s>', '').replace('<pad>', '').strip()
-                        additional_questions = result.split('<sep>')
-                        questions.extend([q.strip() for q in additional_questions if q.strip() and len(q.strip()) > 5])
-                    except:
-                        continue
-        
-        # Remove duplicates while preserving order
-        seen = set()
-        unique_questions = []
-        for q in questions:
-            if q.lower() not in seen:
-                seen.add(q.lower())
-                unique_questions.append(q)
-        
-        return unique_questions[:min_questions]
-    except Exception as e:
-        st.warning(f"Could not generate questions from passage: {e}")
-        return []
-
-def answer_question(question: str, context: str, qa_pipeline) -> Dict[str, any]:
-    """Answer a question based on the context"""
-    try:
-        # Limit context length to avoid model limitations
-        max_context_length = 2000  # words
-        if len(context.split()) > max_context_length:
-            # Take beginning and end of context
-            words = context.split()
-            context = ' '.join(words[:max_context_length//2] + words[-max_context_length//2:])
+        # Limit context for speed
+        max_words = 500
+        words = context.split()
+        if len(words) > max_words:
+            context = ' '.join(words[:max_words])
         
         result = qa_pipeline({
-            'question': question, 
+            'question': question,
             'context': context
         })
         
         return {
             'answer': result['answer'],
-            'score': round(result['score'], 3),
-            'start': result.get('start', -1),
-            'end': result.get('end', -1)
+            'confidence': round(result['score'], 3)
         }
     except Exception as e:
         return {
-            'answer': f"Could not find an answer: {str(e)}",
-            'score': 0.0,
-            'start': -1,
-            'end': -1
+            'answer': f"Could not find answer: {str(e)}",
+            'confidence': 0.0
         }
 
 # ============================================================================
@@ -280,16 +227,14 @@ def answer_question(question: str, context: str, qa_pipeline) -> Dict[str, any]:
 
 if 'document_text' not in st.session_state:
     st.session_state.document_text = ""
-if 'generated_questions' not in st.session_state:
-    st.session_state.generated_questions = []
 if 'qa_pairs' not in st.session_state:
     st.session_state.qa_pairs = []
 if 'uploaded_file_name' not in st.session_state:
     st.session_state.uploaded_file_name = ""
-if 'processing_complete' not in st.session_state:
-    st.session_state.processing_complete = False
 if 'models_loaded' not in st.session_state:
     st.session_state.models_loaded = False
+if 'extraction_done' not in st.session_state:
+    st.session_state.extraction_done = False
 
 # ============================================================================
 # MAIN APP
@@ -308,46 +253,39 @@ def main():
         # Model loading section
         st.subheader("Model Status")
         if not st.session_state.models_loaded:
-            with st.spinner("🔄 Loading AI models... This may take a minute."):
-                nltk_loaded = load_nltk_data()
-                qg_model = load_qg_model()
-                qa_model = load_qa_model()
+            with st.spinner("🔄 Loading AI models..."):
+                load_nltk_data()
+                models = load_models()
                 
-                if nltk_loaded and qg_model and qa_model:
-                    st.session_state.qg_model = qg_model
-                    st.session_state.qa_model = qa_model
+                if models['qg'] and models['qa']:
+                    st.session_state.qg_model = models['qg']
+                    st.session_state.qa_model = models['qa']
                     st.session_state.models_loaded = True
-                    st.success("✅ Models loaded successfully!")
-                    if 'name' in qg_model:
-                        st.caption(f"Using QG: {qg_model['name']}")
+                    st.success("✅ Models loaded!")
                 else:
-                    st.error("❌ Failed to load models. Please refresh the page.")
-                    if not qg_model:
-                        st.error("Question Generation model failed to load")
-                    if not qa_model:
-                        st.error("Question Answering model failed to load")
+                    st.error("❌ Failed to load models.")
                     st.stop()
         else:
             st.success("✅ Models ready!")
         
         st.markdown("---")
         
-        # Question generation settings
+        # Settings
         st.subheader("Question Generation")
-        num_questions = st.slider(
+        num_questions_per_passage = st.slider(
             "Questions per passage", 
             min_value=1, 
-            max_value=5, 
-            value=3,
-            help="Number of questions to generate from each passage"
+            max_value=3, 
+            value=2,
+            help="Fewer questions = faster processing"
         )
         
-        passage_length = st.slider(
-            "Passage length (words)", 
-            min_value=50, 
-            max_value=200, 
-            value=100,
-            help="Maximum words per passage for question generation"
+        max_passages = st.slider(
+            "Max passages to process", 
+            min_value=5, 
+            max_value=30, 
+            value=15,
+            help="Fewer passages = faster processing"
         )
         
         st.markdown("---")
@@ -356,362 +294,258 @@ def main():
         if st.session_state.document_text:
             st.subheader("📄 Document Info")
             word_count = len(st.session_state.document_text.split())
-            char_count = len(st.session_state.document_text)
-            
             st.metric("Words", f"{word_count:,}")
-            st.metric("Characters", f"{char_count:,}")
             
             if st.button("🗑️ Clear Document"):
                 st.session_state.document_text = ""
-                st.session_state.generated_questions = []
                 st.session_state.qa_pairs = []
                 st.session_state.uploaded_file_name = ""
-                st.session_state.processing_complete = False
+                st.session_state.extraction_done = False
                 st.rerun()
     
     # Main content area
-    col1, col2 = st.columns([2, 1])
+    st.subheader("📤 Upload PDF Document")
+    uploaded_file = st.file_uploader(
+        "Choose a PDF file", 
+        type=["pdf"],
+        help="Upload a PDF document"
+    )
     
-    with col1:
-        # File upload section
-        st.subheader("📤 Upload PDF Document")
-        uploaded_file = st.file_uploader(
-            "Choose a PDF file", 
-            type=["pdf"],
-            help="Upload a PDF document to extract text and generate questions"
-        )
-        
-        if uploaded_file is not None:
-            # Check if new file or text needs extraction
-            if (not st.session_state.document_text or 
-                uploaded_file.name != st.session_state.uploaded_file_name):
-                
-                with st.spinner("📖 Extracting text from PDF..."):
-                    try:
-                        document_text = extract_text_from_pdf(uploaded_file)
-                        
-                        if document_text:
-                            st.session_state.document_text = document_text
-                            st.session_state.uploaded_file_name = uploaded_file.name
-                            st.session_state.generated_questions = []
-                            st.session_state.qa_pairs = []
-                            st.session_state.processing_complete = False
-                            st.success(f"✅ Successfully extracted text from '{uploaded_file.name}'!")
-                            time.sleep(1)  # Give user time to see success message
-                            st.rerun()  # Force rerun to show the extracted content
-                        else:
-                            st.warning("⚠️ No text could be extracted from the PDF. The file might be empty or contain only images.")
-                    except Exception as e:
-                        st.error(f"❌ {str(e)}")
-        else:
-            # Clear document when file is removed
-            if st.session_state.document_text:
-                st.session_state.document_text = ""
-                st.session_state.generated_questions = []
-                st.session_state.qa_pairs = []
-                st.session_state.uploaded_file_name = ""
-                st.session_state.processing_complete = False
-    
-    with col2:
-        if st.session_state.document_text:
-            st.info(f"**Current Document:** {st.session_state.uploaded_file_name}")
-    
-    # Display extracted text preview
-    if st.session_state.document_text:
-        # Show success banner
-        st.success(f"📄 **Document loaded:** {st.session_state.uploaded_file_name}")
-        
-        # Show document stats
-        col_stat1, col_stat2, col_stat3 = st.columns(3)
-        with col_stat1:
-            st.metric("📝 Words", f"{len(st.session_state.document_text.split()):,}")
-        with col_stat2:
-            st.metric("📊 Characters", f"{len(st.session_state.document_text):,}")
-        with col_stat3:
-            sentences = nltk.tokenize.sent_tokenize(st.session_state.document_text)
-            st.metric("📑 Sentences", f"{len(sentences):,}")
-        
-        with st.expander("👁️ Preview Extracted Text (first 1000 characters)", expanded=False):
-            preview_text = st.session_state.document_text[:1000]
-            if len(st.session_state.document_text) > 1000:
-                preview_text += "..."
-            st.text_area("", preview_text, height=200, disabled=True, label_visibility="collapsed")
-        
-        st.markdown("---")
-        
-        # Question Generation Section
-        st.subheader("🤖 Auto-Generate Questions")
-        
-        col_btn1, col_btn2, col_btn3 = st.columns([2, 1, 1])
-        
-        with col_btn1:
-            generate_btn = st.button(
-                "🎯 Generate Questions from Document", 
-                type="primary",
-                use_container_width=True,
-                disabled=not st.session_state.models_loaded
-            )
-        
-        if generate_btn and st.session_state.models_loaded:
-            with st.spinner('🔮 Generating questions and answers...'):
+    # Handle file upload
+    if uploaded_file is not None:
+        # Only extract if it's a new file
+        if uploaded_file.name != st.session_state.uploaded_file_name:
+            with st.spinner("📖 Extracting text..."):
                 try:
-                    # Split document into passages
-                    passages = split_into_passages(
-                        st.session_state.document_text, 
-                        max_words=passage_length
-                    )
+                    document_text = extract_text_from_pdf(uploaded_file)
                     
-                    if not passages:
-                        st.error("Could not split document into passages.")
-                        st.stop()
-                    
-                    st.info(f"📝 Processing {len(passages)} passages...")
-                    
-                    # Generate questions and answers
-                    all_qa_pairs = []
-                    progress_bar = st.progress(0)
-                    status_placeholder = st.empty()
-                    
-                    for idx, passage in enumerate(passages):
-                        status_placeholder.text(f"Processing passage {idx + 1} of {len(passages)}...")
+                    if document_text:
+                        st.session_state.document_text = document_text
+                        st.session_state.uploaded_file_name = uploaded_file.name
+                        st.session_state.qa_pairs = []
+                        st.session_state.extraction_done = True
+                        st.success(f"✅ Extracted text from '{uploaded_file.name}'!")
+                    else:
+                        st.warning("⚠️ No text extracted. PDF might be image-based.")
+                except Exception as e:
+                    st.error(f"❌ {str(e)}")
+        
+        # Display document info
+        if st.session_state.document_text:
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("📝 Words", f"{len(st.session_state.document_text.split()):,}")
+            with col2:
+                st.metric("📊 Characters", f"{len(st.session_state.document_text):,}")
+            with col3:
+                sentences = nltk.tokenize.sent_tokenize(st.session_state.document_text)
+                st.metric("📑 Sentences", f"{len(sentences):,}")
+            
+            with st.expander("👁️ Preview Text", expanded=False):
+                preview = st.session_state.document_text[:1000]
+                if len(st.session_state.document_text) > 1000:
+                    preview += "..."
+                st.text_area("", preview, height=200, disabled=True, label_visibility="collapsed")
+            
+            st.markdown("---")
+            
+            # Question Generation Section
+            st.subheader("🤖 Generate Questions")
+            
+            if st.button("🎯 Generate Questions & Answers", type="primary", use_container_width=True):
+                if not st.session_state.models_loaded:
+                    st.error("Models not loaded. Please refresh the page.")
+                    st.stop()
+                
+                # Clear previous results
+                st.session_state.qa_pairs = []
+                
+                with st.spinner('🔮 Generating questions and answers...'):
+                    try:
+                        # Split into passages
+                        passages = split_into_passages(st.session_state.document_text, max_words=150)
                         
-                        questions = generate_questions_from_passage(
-                            passage, 
-                            st.session_state.qg_model, 
-                            min_questions=num_questions
+                        # Limit passages for speed
+                        passages = passages[:max_passages]
+                        
+                        st.info(f"📝 Processing {len(passages)} passages...")
+                        
+                        # Generate questions (batch processing)
+                        questions = generate_questions_batch(
+                            passages,
+                            st.session_state.qg_model,
+                            questions_per_passage=num_questions_per_passage
                         )
                         
-                        for question in questions:
-                            if question:  # Only process non-empty questions
-                                answer_result = answer_question(
-                                    question, 
-                                    st.session_state.document_text, 
-                                    st.session_state.qa_model
-                                )
-                                all_qa_pairs.append({
-                                    'question': question,
-                                    'answer': answer_result['answer'],
-                                    'confidence': answer_result['score']
-                                })
+                        if not questions:
+                            st.warning("No questions generated. Try adjusting settings.")
+                            st.stop()
                         
-                        # Update progress
-                        progress_bar.progress((idx + 1) / len(passages))
-                    
-                    progress_bar.empty()
-                    status_placeholder.empty()
-                    
-                    # Remove duplicates while preserving order
-                    seen_questions = set()
-                    unique_qa_pairs = []
-                    for qa in all_qa_pairs:
-                        if qa['question'].lower() not in seen_questions:
-                            seen_questions.add(qa['question'].lower())
-                            unique_qa_pairs.append(qa)
-                    
-                    st.session_state.qa_pairs = unique_qa_pairs
-                    st.session_state.generated_questions = [qa['question'] for qa in unique_qa_pairs]
-                    st.session_state.processing_complete = True
-                    
-                    st.success(f'✅ Generated {len(unique_qa_pairs)} unique questions and answers!')
-                    time.sleep(0.5)
-                    st.rerun()
-                    
-                except Exception as e:
-                    st.error(f"❌ Error during generation: {str(e)}")
-                    import traceback
-                    st.code(traceback.format_exc())
-        
-        # Display generated Q&A
-        if st.session_state.qa_pairs:
-            st.markdown("---")
-            st.subheader(f"📋 Generated Questions & Answers ({len(st.session_state.qa_pairs)})")
+                        st.info(f"💬 Generated {len(questions)} questions. Answering...")
+                        
+                        # Answer questions with progress bar
+                        progress_bar = st.progress(0)
+                        qa_pairs = []
+                        
+                        for idx, question in enumerate(questions):
+                            answer_result = answer_question_fast(
+                                question,
+                                st.session_state.document_text,
+                                st.session_state.qa_model
+                            )
+                            
+                            qa_pairs.append({
+                                'question': question,
+                                'answer': answer_result['answer'],
+                                'confidence': answer_result['confidence']
+                            })
+                            
+                            progress_bar.progress((idx + 1) / len(questions))
+                        
+                        progress_bar.empty()
+                        
+                        # Store results
+                        st.session_state.qa_pairs = qa_pairs
+                        
+                        st.success(f'✅ Generated {len(qa_pairs)} Q&A pairs!')
+                        
+                    except Exception as e:
+                        st.error(f"❌ Error: {str(e)}")
+                        import traceback
+                        with st.expander("Error details"):
+                            st.code(traceback.format_exc())
             
-            # Download buttons
-            col_download1, col_download2 = st.columns(2)
-            
-            with col_download1:
-                json_data = json.dumps(st.session_state.qa_pairs, indent=4)
-                filename_base = st.session_state.uploaded_file_name.replace('.pdf', '')
-                st.download_button(
-                    label="📥 Download as JSON",
-                    data=json_data,
-                    file_name=f"{filename_base}_qa.json",
-                    mime="application/json",
-                    use_container_width=True
-                )
-            
-            with col_download2:
-                # Format as readable text
-                text_output = ""
-                for i, qa in enumerate(st.session_state.qa_pairs, 1):
-                    text_output += f"Q{i}: {qa['question']}\n"
-                    text_output += f"A{i}: {qa['answer']}\n"
-                    text_output += f"Confidence: {qa['confidence']:.2%}\n\n"
+            # Display Q&A
+            if st.session_state.qa_pairs:
+                st.markdown("---")
+                st.subheader(f"📋 Questions & Answers ({len(st.session_state.qa_pairs)})")
                 
-                st.download_button(
-                    label="📥 Download as Text",
-                    data=text_output,
-                    file_name=f"{filename_base}_qa.txt",
-                    mime="text/plain",
-                    use_container_width=True
-                )
-            
-            st.markdown("---")
-            
-            # Display options
-            col_opt1, col_opt2 = st.columns(2)
-            
-            with col_opt1:
-                show_confidence = st.checkbox("Show confidence scores", value=True)
-            
-            with col_opt2:
-                view_mode = st.radio(
-                    "View mode:",
-                    ["Expandable List", "Show All"],
-                    horizontal=True,
-                    help="Choose how to display Q&A pairs"
-                )
-            
-            min_confidence = st.slider(
-                "Minimum confidence threshold",
-                min_value=0.0,
-                max_value=1.0,
-                value=0.0,
-                step=0.1,
-                help="Filter answers by confidence score"
-            )
-            
-            filtered_qa = [qa for qa in st.session_state.qa_pairs if qa['confidence'] >= min_confidence]
-            
-            st.write(f"Showing {len(filtered_qa)} of {len(st.session_state.qa_pairs)} questions")
-            st.markdown("---")
-            
-            # Display based on view mode
-            if view_mode == "Expandable List":
-                # Show expandable list - click to see answer
-                for i, qa in enumerate(filtered_qa, 1):
-                    confidence_color = (
-                        "🟢" if qa['confidence'] > 0.7 
-                        else "🟠" if qa['confidence'] > 0.4 
-                        else "🔴"
+                # Download buttons
+                col_d1, col_d2 = st.columns(2)
+                with col_d1:
+                    json_data = json.dumps(st.session_state.qa_pairs, indent=4)
+                    filename_base = st.session_state.uploaded_file_name.replace('.pdf', '')
+                    st.download_button(
+                        "📥 Download JSON",
+                        json_data,
+                        f"{filename_base}_qa.json",
+                        "application/json",
+                        use_container_width=True
                     )
-                    
-                    confidence_text = f" {confidence_color} {qa['confidence']:.0%}" if show_confidence else ""
-                    
-                    with st.expander(f"**Q{i}:** {qa['question']}{confidence_text}", expanded=False):
-                        st.markdown(f"### Answer:")
-                        st.info(qa['answer'])
+                
+                with col_d2:
+                    text_output = "\n\n".join([
+                        f"Q{i+1}: {qa['question']}\nA{i+1}: {qa['answer']}\nConfidence: {qa['confidence']:.0%}"
+                        for i, qa in enumerate(st.session_state.qa_pairs)
+                    ])
+                    st.download_button(
+                        "📥 Download Text",
+                        text_output,
+                        f"{filename_base}_qa.txt",
+                        "text/plain",
+                        use_container_width=True
+                    )
+                
+                st.markdown("---")
+                
+                # Display options
+                col_o1, col_o2 = st.columns(2)
+                with col_o1:
+                    show_confidence = st.checkbox("Show confidence scores", value=True)
+                with col_o2:
+                    view_mode = st.radio(
+                        "View:",
+                        ["Expandable", "Show All"],
+                        horizontal=True
+                    )
+                
+                min_confidence = st.slider(
+                    "Min confidence",
+                    0.0, 1.0, 0.0, 0.1
+                )
+                
+                filtered_qa = [qa for qa in st.session_state.qa_pairs if qa['confidence'] >= min_confidence]
+                st.write(f"Showing {len(filtered_qa)} of {len(st.session_state.qa_pairs)} questions")
+                
+                # Display Q&A
+                if view_mode == "Expandable":
+                    for i, qa in enumerate(filtered_qa, 1):
+                        conf_icon = "🟢" if qa['confidence'] > 0.7 else "🟠" if qa['confidence'] > 0.4 else "🔴"
+                        conf_text = f" {conf_icon} {qa['confidence']:.0%}" if show_confidence else ""
                         
-                        if show_confidence:
-                            col_a1, col_a2 = st.columns([3, 1])
-                            with col_a2:
+                        with st.expander(f"**Q{i}:** {qa['question']}{conf_text}"):
+                            st.markdown("### Answer")
+                            st.info(qa['answer'])
+                            if show_confidence:
                                 st.metric("Confidence", f"{qa['confidence']:.1%}")
-                        
-                        # Optional: Show where in document (if we had position data)
-                        if qa['confidence'] < 0.5:
-                            st.warning("⚠️ Low confidence - answer may not be accurate")
-            
-            else:
-                # Show all Q&A at once
-                for i, qa in enumerate(filtered_qa, 1):
-                    with st.container():
+                else:
+                    for i, qa in enumerate(filtered_qa, 1):
                         st.markdown(f"### Question {i}")
                         st.markdown(f"**Q:** {qa['question']}")
-                        
-                        confidence_color = (
-                            "green" if qa['confidence'] > 0.7 
-                            else "orange" if qa['confidence'] > 0.4 
-                            else "red"
-                        )
-                        
                         if show_confidence:
+                            conf_color = "green" if qa['confidence'] > 0.7 else "orange" if qa['confidence'] > 0.4 else "red"
                             st.markdown(
                                 f"**A:** {qa['answer']} "
-                                f"<span style='color:{confidence_color}'>●</span> "
-                                f"*Confidence: {qa['confidence']:.2%}*",
+                                f"<span style='color:{conf_color}'>●</span> "
+                                f"*{qa['confidence']:.0%}*",
                                 unsafe_allow_html=True
                             )
                         else:
                             st.markdown(f"**A:** {qa['answer']}")
-                        
                         st.markdown("---")
-        
-        # Custom Question Section
-        st.markdown("---")
-        st.subheader("❓ Ask Your Own Question")
-        
-        user_question = st.text_input(
-            "Type your question here:",
-            placeholder="e.g., What is the main topic of this document?",
-            key="user_question_input"
-        )
-        
-        col_ask1, col_ask2 = st.columns([3, 1])
-        
-        with col_ask1:
-            ask_btn = st.button(
-                "🔍 Get Answer", 
-                type="primary", 
-                use_container_width=True,
-                disabled=not st.session_state.models_loaded or not user_question
+            
+            # Custom question section
+            st.markdown("---")
+            st.subheader("❓ Ask Your Own Question")
+            
+            user_question = st.text_input(
+                "Type your question:",
+                placeholder="What is the main topic?",
+                key="user_q"
             )
-        
-        if ask_btn and user_question and st.session_state.models_loaded:
-            with st.spinner('🔎 Finding answer...'):
-                try:
-                    answer_result = answer_question(
-                        user_question, 
-                        st.session_state.document_text, 
+            
+            if st.button("🔍 Get Answer", disabled=not user_question):
+                with st.spinner('Finding answer...'):
+                    answer_result = answer_question_fast(
+                        user_question,
+                        st.session_state.document_text,
                         st.session_state.qa_model
                     )
                     
-                    st.markdown("### 💡 Answer")
-                    
-                    col_ans1, col_ans2 = st.columns([4, 1])
-                    
-                    with col_ans1:
+                    col_a1, col_a2 = st.columns([3, 1])
+                    with col_a1:
                         st.success(answer_result['answer'])
-                    
-                    with col_ans2:
-                        confidence_pct = answer_result['score'] * 100
-                        st.metric("Confidence", f"{confidence_pct:.1f}%")
-                    
-                    # Show context if confidence is low
-                    if answer_result['score'] < 0.5:
-                        st.warning("⚠️ Low confidence answer. The model might not have found a clear answer in the document.")
-                
-                except Exception as e:
-                    st.error(f"❌ Error answering question: {str(e)}")
+                    with col_a2:
+                        st.metric("Confidence", f"{answer_result['confidence']:.1%}")
     
     else:
-        # Initial state - no document uploaded
-        st.info("👆 Please upload a PDF document to get started!")
+        st.info("👆 Please upload a PDF to get started!")
         
         st.markdown("### 🌟 Features")
-        col_f1, col_f2, col_f3 = st.columns(3)
+        col1, col2, col3 = st.columns(3)
         
-        with col_f1:
+        with col1:
             st.markdown("""
             **Auto-Generate Questions**
-            - Extract key questions from your document
-            - Powered by AI language models
-            - Customizable question count
+            - AI-powered question generation
+            - Customizable settings
+            - Fast processing
             """)
         
-        with col_f2:
+        with col2:
             st.markdown("""
             **Ask Custom Questions**
-            - Query your document naturally
-            - Get instant AI-powered answers
-            - Confidence scores included
+            - Natural language queries
+            - Instant answers
+            - Confidence scores
             """)
         
-        with col_f3:
+        with col3:
             st.markdown("""
             **Export Results**
-            - Download Q&A as JSON
-            - Download Q&A as text
-            - Easy sharing and storage
+            - Download as JSON
+            - Download as text
+            - Easy sharing
             """)
 
 if __name__ == "__main__":
