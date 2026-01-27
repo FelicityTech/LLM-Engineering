@@ -206,10 +206,8 @@ def answer_question_fast(question: str, context: str, qa_pipeline) -> Dict:
         if len(words) > max_words:
             context = ' '.join(words[:max_words])
         
-        result = qa_pipeline({
-            'question': question,
-            'context': context
-        })
+        # Call pipeline with keyword arguments, not a dictionary
+        result = qa_pipeline(question=question, context=context)
         
         return {
             'answer': result['answer'],
