@@ -1,7 +1,7 @@
 import streamlit as st
 import pdfplumber
 import nltk
-from transformers import pipeline
+from transformers import pipeline, T5Tokenizer, T5ForConditionalGeneration
 import json
 import time
 from typing import List, Dict
@@ -90,15 +90,21 @@ def load_nltk_data():
 def load_qg_model():
     """Load the question generation model"""
     try:
-        qg_pipeline = pipeline(
-            "text2text-generation", 
-            model="valhalla/t5-base-qg-hl",
-            device=-1  # Use CPU
-        )
-        return qg_pipeline
+        model_name = "valhalla/t5-base-qg-hl"
+        tokenizer = T5Tokenizer.from_pretrained(model_name)
+        model = T5ForConditionalGeneration.from_pretrained(model_name)
+        return {'model': model, 'tokenizer': tokenizer, 'name': model_name}
     except Exception as e:
-        st.error(f"Error loading Question Generation model: {e}")
-        return None
+        # Fallback to a simpler model
+        try:
+            st.warning("Primary model unavailable, using fallback model...")
+            model_name = "google/flan-t5-small"
+            tokenizer = T5Tokenizer.from_pretrained(model_name)
+            model = T5ForConditionalGeneration.from_pretrained(model_name)
+            return {'model': model, 'tokenizer': tokenizer, 'name': model_name}
+        except Exception as e2:
+            st.error(f"Error loading Question Generation model: {e2}")
+            return None
 
 @st.cache_resource(show_spinner=False)
 def load_qa_model():
@@ -111,8 +117,18 @@ def load_qa_model():
         )
         return qa_pipeline
     except Exception as e:
-        st.error(f"Error loading Question Answering model: {e}")
-        return None
+        # Fallback to distilbert
+        try:
+            st.warning("Primary model unavailable, using fallback model...")
+            qa_pipeline = pipeline(
+                "question-answering",
+                model="distilbert-base-uncased-distilled-squad",
+                device=-1
+            )
+            return qa_pipeline
+        except Exception as e2:
+            st.error(f"Error loading Question Answering model: {e2}")
+            return None
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -171,33 +187,60 @@ def split_into_passages(text: str, max_words: int = 100) -> List[str]:
         st.error(f"Error splitting text: {e}")
         return []
 
-def generate_questions_from_passage(passage: str, qg_pipeline, min_questions: int = 3) -> List[str]:
+def generate_questions_from_passage(passage: str, qg_model_dict, min_questions: int = 3) -> List[str]:
     """Generate questions from a text passage"""
     try:
+        model = qg_model_dict['model']
+        tokenizer = qg_model_dict['tokenizer']
+        
+        # Prepare input
         input_text = f"generate questions: {passage}"
-        results = qg_pipeline(input_text, max_length=256, num_return_sequences=1)
-        questions = results[0]['generated_text'].split('<sep>')
-        questions = [q.strip() for q in questions if q.strip()]
+        inputs = tokenizer(input_text, return_tensors="pt", max_length=512, truncation=True)
+        
+        # Generate questions
+        outputs = model.generate(
+            **inputs,
+            max_length=256,
+            num_beams=4,
+            early_stopping=True
+        )
+        
+        # Decode and parse questions
+        result = tokenizer.decode(outputs[0], skip_special_tokens=False)
+        result = result.replace('</s>', '').replace('<pad>', '').strip()
+        
+        # Split by separator and clean
+        questions = result.split('<sep>')
+        questions = [q.strip() for q in questions if q.strip() and len(q.strip()) > 5]
         
         # If we don't have enough questions, try with smaller chunks
-        if len(questions) < min_questions:
+        if len(questions) < min_questions and len(passage.split()) > 20:
             sentences = nltk.tokenize.sent_tokenize(passage)
-            for i in range(0, len(sentences) - 1, 2):
+            for i in range(0, min(3, len(sentences) - 1)):
                 if len(questions) >= min_questions:
                     break
                 chunk = ' '.join(sentences[i:i+2])
-                if len(chunk.split()) > 5:
+                if len(chunk.split()) > 10:
                     try:
-                        additional_results = qg_pipeline(
-                            f"generate questions: {chunk}", 
-                            max_length=128
-                        )
-                        additional_questions = additional_results[0]['generated_text'].split('<sep>')
-                        questions.extend([q.strip() for q in additional_questions if q.strip()])
+                        chunk_input = f"generate questions: {chunk}"
+                        inputs = tokenizer(chunk_input, return_tensors="pt", max_length=512, truncation=True)
+                        outputs = model.generate(**inputs, max_length=128, num_beams=3)
+                        result = tokenizer.decode(outputs[0], skip_special_tokens=False)
+                        result = result.replace('</s>', '').replace('<pad>', '').strip()
+                        additional_questions = result.split('<sep>')
+                        questions.extend([q.strip() for q in additional_questions if q.strip() and len(q.strip()) > 5])
                     except:
                         continue
         
-        return list(dict.fromkeys(questions[:min_questions]))  # Remove duplicates, keep order
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_questions = []
+        for q in questions:
+            if q.lower() not in seen:
+                seen.add(q.lower())
+                unique_questions.append(q)
+        
+        return unique_questions[:min_questions]
     except Exception as e:
         st.warning(f"Could not generate questions from passage: {e}")
         return []
@@ -206,7 +249,7 @@ def answer_question(question: str, context: str, qa_pipeline) -> Dict[str, any]:
     """Answer a question based on the context"""
     try:
         # Limit context length to avoid model limitations
-        max_context_length = 3000  # Adjust based on model capacity
+        max_context_length = 2000  # words
         if len(context.split()) > max_context_length:
             # Take beginning and end of context
             words = context.split()
@@ -220,8 +263,8 @@ def answer_question(question: str, context: str, qa_pipeline) -> Dict[str, any]:
         return {
             'answer': result['answer'],
             'score': round(result['score'], 3),
-            'start': result['start'],
-            'end': result['end']
+            'start': result.get('start', -1),
+            'end': result.get('end', -1)
         }
     except Exception as e:
         return {
@@ -266,17 +309,23 @@ def main():
         st.subheader("Model Status")
         if not st.session_state.models_loaded:
             with st.spinner("🔄 Loading AI models... This may take a minute."):
-                load_nltk_data()
+                nltk_loaded = load_nltk_data()
                 qg_model = load_qg_model()
                 qa_model = load_qa_model()
                 
-                if qg_model and qa_model:
+                if nltk_loaded and qg_model and qa_model:
                     st.session_state.qg_model = qg_model
                     st.session_state.qa_model = qa_model
                     st.session_state.models_loaded = True
                     st.success("✅ Models loaded successfully!")
+                    if 'name' in qg_model:
+                        st.caption(f"Using QG: {qg_model['name']}")
                 else:
                     st.error("❌ Failed to load models. Please refresh the page.")
+                    if not qg_model:
+                        st.error("Question Generation model failed to load")
+                    if not qa_model:
+                        st.error("Question Answering model failed to load")
                     st.stop()
         else:
             st.success("✅ Models ready!")
@@ -360,12 +409,10 @@ def main():
     # Display extracted text preview
     if st.session_state.document_text:
         with st.expander("👁️ Preview Extracted Text (first 1000 characters)", expanded=False):
-            st.text_area(
-                "", 
-                st.session_state.document_text[:1000] + "..." if len(st.session_state.document_text) > 1000 else st.session_state.document_text,
-                height=200, 
-                disabled=True
-            )
+            preview_text = st.session_state.document_text[:1000]
+            if len(st.session_state.document_text) > 1000:
+                preview_text += "..."
+            st.text_area("", preview_text, height=200, disabled=True)
         
         st.markdown("---")
         
@@ -378,7 +425,8 @@ def main():
             generate_btn = st.button(
                 "🎯 Generate Questions from Document", 
                 type="primary",
-                use_container_width=True
+                use_container_width=True,
+                disabled=not st.session_state.models_loaded
             )
         
         if generate_btn and st.session_state.models_loaded:
@@ -399,8 +447,11 @@ def main():
                     # Generate questions and answers
                     all_qa_pairs = []
                     progress_bar = st.progress(0)
+                    status_placeholder = st.empty()
                     
                     for idx, passage in enumerate(passages):
+                        status_placeholder.text(f"Processing passage {idx + 1} of {len(passages)}...")
+                        
                         questions = generate_questions_from_passage(
                             passage, 
                             st.session_state.qg_model, 
@@ -408,28 +459,30 @@ def main():
                         )
                         
                         for question in questions:
-                            answer_result = answer_question(
-                                question, 
-                                st.session_state.document_text, 
-                                st.session_state.qa_model
-                            )
-                            all_qa_pairs.append({
-                                'question': question,
-                                'answer': answer_result['answer'],
-                                'confidence': answer_result['score']
-                            })
+                            if question:  # Only process non-empty questions
+                                answer_result = answer_question(
+                                    question, 
+                                    st.session_state.document_text, 
+                                    st.session_state.qa_model
+                                )
+                                all_qa_pairs.append({
+                                    'question': question,
+                                    'answer': answer_result['answer'],
+                                    'confidence': answer_result['score']
+                                })
                         
                         # Update progress
                         progress_bar.progress((idx + 1) / len(passages))
                     
                     progress_bar.empty()
+                    status_placeholder.empty()
                     
                     # Remove duplicates while preserving order
                     seen_questions = set()
                     unique_qa_pairs = []
                     for qa in all_qa_pairs:
-                        if qa['question'] not in seen_questions:
-                            seen_questions.add(qa['question'])
+                        if qa['question'].lower() not in seen_questions:
+                            seen_questions.add(qa['question'].lower())
                             unique_qa_pairs.append(qa)
                     
                     st.session_state.qa_pairs = unique_qa_pairs
@@ -442,21 +495,24 @@ def main():
                     
                 except Exception as e:
                     st.error(f"❌ Error during generation: {str(e)}")
+                    import traceback
+                    st.code(traceback.format_exc())
         
         # Display generated Q&A
         if st.session_state.qa_pairs:
             st.markdown("---")
             st.subheader(f"📋 Generated Questions & Answers ({len(st.session_state.qa_pairs)})")
             
-            # Download button
+            # Download buttons
             col_download1, col_download2 = st.columns(2)
             
             with col_download1:
                 json_data = json.dumps(st.session_state.qa_pairs, indent=4)
+                filename_base = st.session_state.uploaded_file_name.replace('.pdf', '')
                 st.download_button(
                     label="📥 Download as JSON",
                     data=json_data,
-                    file_name=f"{st.session_state.uploaded_file_name.replace('.pdf', '')}_qa.json",
+                    file_name=f"{filename_base}_qa.json",
                     mime="application/json",
                     use_container_width=True
                 )
@@ -467,12 +523,12 @@ def main():
                 for i, qa in enumerate(st.session_state.qa_pairs, 1):
                     text_output += f"Q{i}: {qa['question']}\n"
                     text_output += f"A{i}: {qa['answer']}\n"
-                    text_output += f"Confidence: {qa['confidence']}\n\n"
+                    text_output += f"Confidence: {qa['confidence']:.2%}\n\n"
                 
                 st.download_button(
                     label="📥 Download as Text",
                     data=text_output,
-                    file_name=f"{st.session_state.uploaded_file_name.replace('.pdf', '')}_qa.txt",
+                    file_name=f"{filename_base}_qa.txt",
                     mime="text/plain",
                     use_container_width=True
                 )
@@ -529,37 +585,39 @@ def main():
         col_ask1, col_ask2 = st.columns([3, 1])
         
         with col_ask1:
-            ask_btn = st.button("🔍 Get Answer", type="primary", use_container_width=True)
+            ask_btn = st.button(
+                "🔍 Get Answer", 
+                type="primary", 
+                use_container_width=True,
+                disabled=not st.session_state.models_loaded or not user_question
+            )
         
-        if ask_btn and user_question:
-            if st.session_state.models_loaded:
-                with st.spinner('🔎 Finding answer...'):
-                    try:
-                        answer_result = answer_question(
-                            user_question, 
-                            st.session_state.document_text, 
-                            st.session_state.qa_model
-                        )
-                        
-                        st.markdown("### 💡 Answer")
-                        
-                        col_ans1, col_ans2 = st.columns([4, 1])
-                        
-                        with col_ans1:
-                            st.success(answer_result['answer'])
-                        
-                        with col_ans2:
-                            confidence_pct = answer_result['score'] * 100
-                            st.metric("Confidence", f"{confidence_pct:.1f}%")
-                        
-                        # Show context if confidence is low
-                        if answer_result['score'] < 0.5:
-                            st.warning("⚠️ Low confidence answer. The model might not have found a clear answer in the document.")
+        if ask_btn and user_question and st.session_state.models_loaded:
+            with st.spinner('🔎 Finding answer...'):
+                try:
+                    answer_result = answer_question(
+                        user_question, 
+                        st.session_state.document_text, 
+                        st.session_state.qa_model
+                    )
                     
-                    except Exception as e:
-                        st.error(f"❌ Error answering question: {str(e)}")
-            else:
-                st.error("Models not loaded. Please refresh the page.")
+                    st.markdown("### 💡 Answer")
+                    
+                    col_ans1, col_ans2 = st.columns([4, 1])
+                    
+                    with col_ans1:
+                        st.success(answer_result['answer'])
+                    
+                    with col_ans2:
+                        confidence_pct = answer_result['score'] * 100
+                        st.metric("Confidence", f"{confidence_pct:.1f}%")
+                    
+                    # Show context if confidence is low
+                    if answer_result['score'] < 0.5:
+                        st.warning("⚠️ Low confidence answer. The model might not have found a clear answer in the document.")
+                
+                except Exception as e:
+                    st.error(f"❌ Error answering question: {str(e)}")
     
     else:
         # Initial state - no document uploaded
