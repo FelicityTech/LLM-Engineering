@@ -1,0 +1,45 @@
+{
+  "task_1_sentiment_classification": {
+    "predicted_labels": [
+      "{'label': 'POSITIVE', 'score': 0.929397702217102}",
+      "{'label': 'POSITIVE', 'score': 0.8654273152351379}",
+      "{'label': 'POSITIVE', 'score': 0.9994640946388245}",
+      "{'label': 'NEGATIVE', 'score': 0.9935314059257507}",
+      "{'label': 'POSITIVE', 'score': 0.9986565113067627}"
+    ],
+    "predictions": [
+      1,
+      1,
+      1,
+      0,
+      1
+    ],
+    "accuracy_result": 0.8,
+    "f1_result": 0.8571428571428571
+  },
+  "task_2_translation": {
+    "translated_review": "Estoy muy satisfecho con mi Nissan NV SL 2014. Uso esta camioneta para mis entregas de negocios y uso personal.",
+    "bleu_score": {
+      "bleu": 0.3140322081976493,
+      "precisions": [
+        0.9090909090909091,
+        0.8571428571428571,
+        0.75,
+        0.631578947368421
+      ],
+      "brevity_penalty": 0.40289032152913307,
+      "length_ratio": 0.5238095238095238,
+      "translation_length": 22,
+      "reference_length": 42
+    }
+  },
+  "task_3_question_answering": {
+    "question": "What did he like about the brand?",
+    "context": "The car is fine. It's a bit loud and not very powerful. On one hand, compared to its peers, the interior is well-built. The transmission failed a few years ago, and the dealer replaced it under warranty with no issues. Now, about 60k miles later, the transmission is failing again. It sounds like a truck, and the issues are well-documented. The dealer tells me it is normal, refusing to do anything to resolve the issue. After owning the car for 4 years, there are many other vehicles I would purchase over this one. Initially, I really liked what the brand is about: ride quality, reliability, etc. But I will not purchase another one. Despite these concerns, I must say, the level of comfort in the car has always been satisfactory, but not worth the rest of issues found.",
+    "answer": "ride quality, reliability"
+  },
+  "task_4_summarization": {
+    "summarized_text": "The Nissan Rogue provides me with the desired SUV experience without burdening me with an exorbitant payment. Handling and styling are great; I have hauled 12 bags of mulch in the back with the seats down and could have held more. The engine delivers strong",
+    "token_count": 45
+  }
+}
