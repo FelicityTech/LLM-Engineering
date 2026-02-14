@@ -297,12 +297,6 @@ print(summary)
 
 ### Option 4: Run Full Demonstration
 
-See all capabilities in action:
-
-```bash
-python car_dealership_chatbot.py
-```
-
 ---
 
 ## 🔧 Technical Implementation
@@ -586,12 +580,12 @@ delivers strong performance and smooth ride."
 
 ## 📞 Contact
 
-**Project Developer:** [Your Name]
+**Project Developer:** [Solomon Adegoke]
 
-- **Email:** your.email@example.com
-- **LinkedIn:** [linkedin.com/in/yourprofile](https://linkedin.com/in/yourprofile)
-- **GitHub:** [@yourusername](https://github.com/yourusername)
-- **Portfolio:** [yourportfolio.com](https://yourportfolio.com)
+- **Email:** souceking@gmail.com
+- **LinkedIn:** [linkedin.com/in/yourprofile](https://linkedin.com/in/solomon-eniola-adegoke)
+- **GitHub:** [@yourusername](https://github.com/felicitytech)
+- **Portfolio:** [solomonadegokeportfolio.com](https://solomonadegoke.vercel.app/)
 
 ---
 
